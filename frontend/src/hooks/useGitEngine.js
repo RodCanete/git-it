@@ -1,12 +1,8 @@
 import { useState, useRef, useCallback } from 'react';
 import * as git from 'isomorphic-git';
-import LightningFS from '@isomorphic-git/lightning-fs';
+import { REPO_DIR, createGitFs } from '../lib/gitFs';
 
-const DIR = '/repo';
-
-function makeFs(name) {
-  return new LightningFS(name);
-}
+const DIR = REPO_DIR;
 
 async function replayInitialState(fs, initialState) {
   const { commits = [], refs = {}, workingDir = [] } = initialState;
@@ -234,8 +230,7 @@ export default function useGitEngine() {
   const [repoState, setRepoState] = useState(null);
 
   async function initRepo(template) {
-    const fsName = `gitit-${Date.now()}`;
-    const fs = makeFs(fsName);
+    const fs = createGitFs();
     fsRef.current = fs;
     hashMapRef.current = {};
 
