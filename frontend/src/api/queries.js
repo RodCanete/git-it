@@ -7,7 +7,13 @@ export const login = (data) => client.post('/auth/token/', data).then(r => r.dat
 // Curriculum
 export const fetchModules = () => client.get('/modules/').then(r => r.data);
 export const fetchScenario = (id) => client.get(`/scenarios/${id}/`).then(r => r.data);
-export const fetchNextTemplate = (scenarioId) => client.get(`/scenarios/${scenarioId}/next-template/`).then(r => r.data);
+export const fetchNextTemplate = (scenarioId, difficulty) => {
+  const params = difficulty ? { difficulty } : {};
+  return client.get(`/scenarios/${scenarioId}/next-template/`, { params }).then(r => r.data);
+};
+
+export const advanceVariant = (scenarioId) =>
+  client.post(`/scenarios/${scenarioId}/advance-variant/`).then(r => r.data);
 
 // Progress
 export const fetchProgress = () => client.get('/progress/').then(r => r.data);

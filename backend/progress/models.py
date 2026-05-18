@@ -27,6 +27,11 @@ class ScenarioProgress(models.Model):
     completed = models.BooleanField(default=False)
     attempts = models.PositiveIntegerField(default=0)
     last_template_used = models.PositiveSmallIntegerField(null=True, blank=True)
+    easy_completed = models.BooleanField(default=False)
+    medium_completed = models.BooleanField(default=False)
+    hard_completed = models.BooleanField(default=False)
+    tier_variant_attempts = models.PositiveSmallIntegerField(default=0)
+    hint_cycle_active = models.BooleanField(default=False)
 
     class Meta:
         unique_together = ('user', 'scenario')

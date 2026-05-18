@@ -15,22 +15,33 @@ export default function useSession() {
   }
 
   async function recordCommand(command, wasValid) {
-    if (!sessionIdRef.current) return;
+    if (!sessionIdRef.current) return 0;
     countRef.current += 1;
     setCommandCount(countRef.current);
     await logCommand(sessionIdRef.current, { command, was_valid: wasValid });
+    return countRef.current;
   }
 
-  async function finishSession(targetAchieved, terminatedByCap = false) {
+  function getCommandCount() {
+    return countRef.current;
+  }
+
+  function resetCommandCount() {
+    countRef.current = 0;
+    setCommandCount(0);
+  }
+
+  async function finishSession(targetAchieved, terminatedByCap = false, difficultyTier = 'easy') {
     if (!sessionIdRef.current) return null;
     const result = await endSession(sessionIdRef.current, {
       commands_used: countRef.current,
       target_achieved: targetAchieved,
       terminated_by_cap: terminatedByCap,
+      difficulty_tier: difficultyTier,
     });
     sessionIdRef.current = null;
     return result;
   }
 
-  return { startSession, recordCommand, finishSession, commandCount };
+  return { startSession, recordCommand, finishSession, commandCount, getCommandCount, resetCommandCount };
 }

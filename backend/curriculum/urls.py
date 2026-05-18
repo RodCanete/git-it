@@ -5,4 +5,5 @@ urlpatterns = [
     path('modules/', views.ModuleListView.as_view(), name='module-list'),
     path('scenarios/<int:pk>/', views.ScenarioDetailView.as_view(), name='scenario-detail'),
     path('scenarios/<int:pk>/next-template/', views.NextTemplateView.as_view(), name='next-template'),
+    path('scenarios/<int:pk>/advance-variant/', views.AdvanceVariantView.as_view(), name='advance-variant'),
 ]
