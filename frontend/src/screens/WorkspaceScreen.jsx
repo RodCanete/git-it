@@ -1,230 +1,674 @@
-import { useEffect, useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useCallback, useEffect, useState } from 'react';
+
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
+
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+
 import { COLORS } from '../tokens';
-import TopNav from '../components/TopNav';
-import DAGRenderer, { ExpectedStatePanel } from '../components/DAGRenderer';
-import DifficultyBadge from '../components/DifficultyBadge';
-import Btn from '../components/Btn';
-import { fetchNextTemplate, fetchScenario } from '../api/queries';
+
+import WorkspaceHeader from '../components/workspace/WorkspaceHeader';
+
+import ScenarioSidebar from '../components/workspace/ScenarioSidebar';
+
+import WorkspaceTerminal from '../components/workspace/WorkspaceTerminal';
+
+import ScaffoldBanner from '../components/workspace/ScaffoldBanner';
+
+import { LiveDagPanel, TargetDagPanel } from '../components/workspace/DagPanels';
+
+import { panelDefaultsForDifficulty } from '../components/workspace/panelDefaults';
+
+import { getDifficultyTheme, isTierUnlocked } from '../components/workspace/difficultyTheme';
+
+import { fetchNextTemplate, fetchScenario, advanceVariant } from '../api/queries';
+
+import { describeConsequence } from '../lib/repoConsequence';
+
 import useGitEngine from '../hooks/useGitEngine';
+
 import useSession from '../hooks/useSession';
 
-function Terminal({ history, onCommand, disabled }) {
-  const [input, setInput] = useState('');
-  const [cmdHistory, setCmdHistory] = useState([]);
-  const [histIdx, setHistIdx] = useState(-1);
-  const bottomRef = useRef(null);
-  const inputRef = useRef(null);
+import ScenarioLoadingScreen from '../components/ScenarioLoadingScreen';
 
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [history]);
+function splitTemplatePayload(data) {
 
-  function submit(e) {
-    e.preventDefault();
-    const cmd = input.trim();
-    if (!cmd) return;
-    setCmdHistory(h => [cmd, ...h]);
-    setHistIdx(-1);
-    onCommand(cmd);
-    setInput('');
-  }
+  const { scaffold, ...template } = data;
 
-  function handleKeyDown(e) {
-    if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      const next = Math.min(histIdx + 1, cmdHistory.length - 1);
-      setHistIdx(next);
-      setInput(cmdHistory[next] || '');
-    } else if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      const next = Math.max(histIdx - 1, -1);
-      setHistIdx(next);
-      setInput(next === -1 ? '' : cmdHistory[next] || '');
-    }
-  }
+  return { template, scaffold: scaffold ?? null };
 
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: '#0A1018', fontFamily: "'JetBrains Mono', monospace" }}
-      onClick={() => inputRef.current?.focus()}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px', borderBottom: `1px solid #1A2535`, flexShrink: 0, background: '#0D1520' }}>
-        <div style={{ width: 10, height: 10, borderRadius: '50%', background: '#FF5A6A' }} />
-        <div style={{ width: 10, height: 10, borderRadius: '50%', background: '#F5A623' }} />
-        <div style={{ width: 10, height: 10, borderRadius: '50%', background: '#01C38D' }} />
-        <span style={{ marginLeft: 8, fontSize: 11, color: COLORS.muted }}>git-it terminal</span>
-      </div>
-      <div style={{ flex: 1, overflowY: 'auto', padding: '10px 14px', display: 'flex', flexDirection: 'column', gap: 2 }}>
-        {history.length === 0 && (
-          <div style={{ fontSize: 12, color: COLORS.muted }}>
-            <span style={{ color: COLORS.accent }}>GIT it!</span> terminal — type git commands to solve the scenario
-          </div>
-        )}
-        {history.map((entry, i) => (
-          <div key={i} style={{ fontSize: 12, lineHeight: 1.6 }}>
-            {entry.type === 'command' && (
-              <div style={{ display: 'flex', gap: 8 }}>
-                <span style={{ color: COLORS.accent, userSelect: 'none' }}>$</span>
-                <span style={{ color: COLORS.text }}>{entry.text}</span>
-              </div>
-            )}
-            {entry.type === 'output' && <div style={{ color: COLORS.textDim, paddingLeft: 16, whiteSpace: 'pre-wrap' }}>{entry.text}</div>}
-            {entry.type === 'error' && <div style={{ color: COLORS.danger, paddingLeft: 16, whiteSpace: 'pre-wrap' }}>{entry.text}</div>}
-            {entry.type === 'success' && <div style={{ color: COLORS.accent, paddingLeft: 16, whiteSpace: 'pre-wrap' }}>{entry.text}</div>}
-          </div>
-        ))}
-        <div ref={bottomRef} />
-      </div>
-      <form onSubmit={submit} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px', borderTop: `1px solid #1A2535`, background: '#0D1520', flexShrink: 0 }}>
-        <span style={{ color: COLORS.accent, fontSize: 13, userSelect: 'none', flexShrink: 0 }}>$</span>
-        <input
-          ref={inputRef}
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          disabled={disabled}
-          placeholder={disabled ? 'Scenario complete' : 'git checkout feature/login'}
-          autoFocus
-          spellCheck={false}
-          autoComplete="off"
-          style={{
-            flex: 1, background: 'transparent', border: 'none', outline: 'none',
-            color: COLORS.text, fontSize: 13, fontFamily: "'JetBrains Mono', monospace",
-          }}
-        />
-      </form>
-    </div>
-  );
 }
 
 export default function WorkspaceScreen() {
+
   const { scenarioId } = useParams();
+
+  const location = useLocation();
+
   const navigate = useNavigate();
 
+  const queryClient = useQueryClient();
+
   const [difficulty, setDifficulty] = useState('easy');
+
+  const [panels, setPanels] = useState(() => panelDefaultsForDifficulty('easy'));
+
   const [termHistory, setTermHistory] = useState([]);
+
   const [done, setDone] = useState(false);
+
   const [template, setTemplate] = useState(null);
 
-  const { data: scenario } = useQuery({ queryKey: ['scenario', scenarioId], queryFn: () => fetchScenario(scenarioId) });
-  const { data: nextTemplate } = useQuery({ queryKey: ['next-template', scenarioId], queryFn: () => fetchNextTemplate(scenarioId), enabled: !!scenarioId });
+  const [scaffold, setScaffold] = useState(null);
 
-  const { repoState, initRepo, runCommand, isComplete } = useGitEngine();
-  const { startSession, recordCommand, finishSession, commandCount } = useSession();
+  const [bannerMessage, setBannerMessage] = useState(null);
+
+  const [consequence, setConsequence] = useState(null);
+
+  const [busy, setBusy] = useState(false);
+
+  const [initialized, setInitialized] = useState(false);
+
+  const [minDurationComplete, setMinDurationComplete] = useState(false);
+
+  const { data: scenario } = useQuery({
+
+    queryKey: ['scenario', scenarioId],
+
+    queryFn: () => fetchScenario(scenarioId),
+
+  });
+
+  const lessonTitle = location.state?.title ?? scenario?.title ?? 'Scenario';
+
+  const { repoState, initRepo, resetRepo, runCommand, isComplete } = useGitEngine();
+
+  const {
+
+    startSession,
+
+    recordCommand,
+
+    finishSession,
+
+    commandCount,
+
+    resetCommandCount,
+
+  } = useSession();
+
+  const applyScaffold = useCallback((scaffoldData, message = null) => {
+
+    setScaffold(scaffoldData);
+
+    if (message !== undefined) setBannerMessage(message);
+
+    else if (scaffoldData?.message) setBannerMessage(scaffoldData.message);
+
+  }, []);
+
+  const loadTemplate = useCallback(async (tpl, { newSession = true, scaffoldData = null, message = null } = {}) => {
+
+    setTemplate(tpl);
+
+    await initRepo(tpl);
+
+    if (scaffoldData) applyScaffold(scaffoldData, message);
+
+    if (newSession) {
+
+      resetCommandCount();
+
+      await startSession(scenarioId, tpl.id);
+
+    }
+
+  }, [initRepo, resetCommandCount, startSession, scenarioId, applyScaffold]);
+
+  const loadWorkspaceTemplate = useCallback(async (tier, { message } = {}) => {
+
+    const data = await fetchNextTemplate(scenarioId, tier);
+
+    const { template: tpl, scaffold: sc } = splitTemplatePayload(data);
+
+    if (sc?.tier && sc.tier !== tier) {
+
+      setDifficulty(sc.tier);
+
+      setPanels(panelDefaultsForDifficulty(sc.tier));
+
+    }
+
+    await loadTemplate(tpl, { newSession: true, scaffoldData: sc, message });
+
+    return { tpl, sc };
+
+  }, [scenarioId, loadTemplate]);
+
+  function clearWorkspaceState() {
+
+    setTermHistory([]);
+
+    setDone(false);
+
+    setConsequence(null);
+
+  }
 
   useEffect(() => {
-    if (nextTemplate && !template) {
-      setTemplate(nextTemplate);
-      initRepo(nextTemplate).then(() => {
-        startSession(scenarioId, nextTemplate.id);
+
+    setInitialized(false);
+
+    setTemplate(null);
+
+    setScaffold(null);
+
+    setBannerMessage(null);
+
+    setMinDurationComplete(false);
+
+    setDifficulty('easy');
+
+    setPanels(panelDefaultsForDifficulty('easy'));
+
+    clearWorkspaceState();
+
+  }, [scenarioId]);
+
+  const handleMinDurationComplete = useCallback(() => {
+
+    setMinDurationComplete(true);
+
+  }, []);
+
+  const dataReady = initialized && !!scenario;
+
+  const showLoader = !(minDurationComplete && dataReady);
+
+  useEffect(() => {
+
+    if (!scenarioId || initialized) return;
+
+    let cancelled = false;
+
+    (async () => {
+
+      setBusy(true);
+
+      try {
+
+        if (cancelled) return;
+
+        await loadWorkspaceTemplate('easy');
+
+        setInitialized(true);
+
+      } finally {
+
+        if (!cancelled) setBusy(false);
+
+      }
+
+    })();
+
+    return () => { cancelled = true; };
+
+  }, [scenarioId, initialized, loadWorkspaceTemplate]);
+
+  async function handleScaffoldAction(scaffoldResult, sessionResult) {
+
+    const action = scaffoldResult?.action;
+
+    const message = scaffoldResult?.message ?? null;
+
+    if (action === 'scenario_complete') {
+
+      setDone(true);
+
+      navigate('/completion', {
+
+        state: {
+
+          result: sessionResult?.result || 'pass',
+
+          commandsUsed: sessionResult?.commands_used,
+
+          minCommands: template?.min_commands,
+
+          scenarioTitle: scenario?.title,
+
+          allTiersComplete: true,
+
+        },
+
       });
+
+      return;
+
     }
-  }, [nextTemplate]);
+
+    if (action === 'tier_unlocked') {
+
+      const nextTier = scaffoldResult.unlocked_tier || 'medium';
+
+      setDifficulty(nextTier);
+
+      setPanels(panelDefaultsForDifficulty(nextTier));
+
+      applyScaffold({ ...scaffoldResult, tier_progress: scaffoldResult.tier_progress }, message);
+
+      setTermHistory(h => [
+
+        ...h,
+
+        { type: 'success', text: scaffoldResult.message || `${nextTier} unlocked!` },
+
+      ]);
+
+      clearWorkspaceState();
+
+      setBusy(true);
+
+      try {
+
+        await loadWorkspaceTemplate(nextTier, { message });
+
+      } finally {
+
+        setBusy(false);
+
+      }
+
+      return;
+
+    }
+
+    if (action === 'reset_same') {
+
+      applyScaffold(scaffoldResult, message);
+
+      setPanels(p => ({ ...p, feedback: difficulty === 'easy' ? true : p.feedback }));
+
+      setTermHistory(h => [
+
+        ...h,
+
+        { type: 'output', text: message || 'Try again — review the feedback above.' },
+
+      ]);
+
+      setBusy(true);
+
+      try {
+
+        await resetRepo(template);
+
+        resetCommandCount();
+
+        await startSession(scenarioId, template.id);
+
+        setDone(false);
+
+      } finally {
+
+        setBusy(false);
+
+      }
+
+      return;
+
+    }
+
+    if (action === 'rotate_variant' || action === 'hint_restart') {
+
+      applyScaffold(scaffoldResult, message);
+
+      setTermHistory(h => [
+
+        ...h,
+
+        { type: 'output', text: message || "Let's try a fresh scenario." },
+
+      ]);
+
+      setBusy(true);
+
+      try {
+
+        await queryClient.invalidateQueries({ queryKey: ['next-template', scenarioId] });
+
+        await loadWorkspaceTemplate(difficulty, { message });
+
+        setDone(false);
+
+      } finally {
+
+        setBusy(false);
+
+      }
+
+    }
+
+  }
+
+  function handlePanelChange(key, value) {
+
+    setPanels(p => ({ ...p, [key]: value }));
+
+  }
+
+  async function handleDifficultyChange(next) {
+
+    if (next === difficulty) return;
+
+    if (!isTierUnlocked(next, scaffold?.tier_progress)) return;
+
+    setDifficulty(next);
+
+    setPanels(panelDefaultsForDifficulty(next));
+
+    setConsequence(null);
+
+    setBannerMessage(null);
+
+    setBusy(true);
+
+    try {
+
+      await loadWorkspaceTemplate(next);
+
+      setDone(false);
+
+      setTermHistory([
+
+        { type: 'output', text: `Switched to ${next} mode.` },
+
+      ]);
+
+    } finally {
+
+      setBusy(false);
+
+    }
+
+  }
+
+  async function handleRetry() {
+
+    if (!scenarioId || busy) return;
+
+    setBusy(true);
+
+    clearWorkspaceState();
+
+    try {
+
+      const data = await advanceVariant(scenarioId);
+
+      const { template: tpl, scaffold: sc } = splitTemplatePayload(data);
+
+      await loadTemplate(tpl, { newSession: true, scaffoldData: sc, message: sc?.message });
+
+      setTermHistory([{ type: 'output', text: sc?.message || "Let's try a fresh scenario." }]);
+
+    } finally {
+
+      setBusy(false);
+
+    }
+
+  }
+
+  async function handleReset() {
+
+    if (!template || busy) return;
+
+    setBusy(true);
+
+    clearWorkspaceState();
+
+    setBannerMessage(null);
+
+    try {
+
+      await resetRepo(template);
+
+      resetCommandCount();
+
+      await startSession(scenarioId, template.id);
+
+    } finally {
+
+      setBusy(false);
+
+    }
+
+  }
 
   async function handleCommand(cmd) {
-    if (done) return;
+
+    if (done || busy) return;
+
+    const prevState = repoState;
 
     setTermHistory(h => [...h, { type: 'command', text: cmd }]);
 
     const result = await runCommand(cmd);
+
     if (result.output) {
-      setTermHistory(h => [...h, { type: result.error ? 'error' : 'output', text: result.output }]);
+
+      setTermHistory(h => [...h, {
+
+        type: result.error ? 'error' : 'output',
+
+        text: result.output,
+
+      }]);
+
     }
 
-    await recordCommand(cmd, result.valid);
-    const newCount = commandCount + 1;
+    const newCount = await recordCommand(cmd, result.valid);
 
     const hardCap = template?.hard_cap ?? 10;
+
+    const targetAchieved = result.repoState && isComplete(template?.target_state, result.repoState);
+
+    setConsequence(describeConsequence(prevState, result.repoState, {
+
+      command: cmd,
+
+      error: result.error,
+
+      targetAchieved,
+
+    }));
+
     if (newCount >= hardCap) {
-      await finishSession(false, true);
+
+      const sessionResult = await finishSession(targetAchieved, true, difficulty);
+
       setDone(true);
-      setTermHistory(h => [...h, { type: 'error', text: `⚠ Hard cap reached (${hardCap} commands). Session ended as MISS.` }]);
-      navigate('/completion', { state: { result: 'miss', commandsUsed: newCount, minCommands: template?.min_commands, scenarioTitle: scenario?.title } });
+
+      const passed = sessionResult?.result === 'pass';
+
+      if (passed) {
+
+        setTermHistory(h => [...h, { type: 'success', text: 'Target state achieved!' }]);
+
+      } else {
+
+        setTermHistory(h => [...h, {
+
+          type: 'error',
+
+          text: `Command limit reached (${hardCap}).`,
+
+        }]);
+
+      }
+
+      await handleScaffoldAction(sessionResult?.scaffold, sessionResult);
+
       return;
+
     }
 
-    if (result.repoState && isComplete(template?.target_state, result.repoState)) {
+    if (targetAchieved) {
+
       setDone(true);
-      setTermHistory(h => [...h, { type: 'success', text: '✓ Target state achieved!' }]);
-      const sessionResult = await finishSession(true, false);
-      navigate('/completion', {
-        state: {
-          result: sessionResult?.result || 'pass',
-          commandsUsed: newCount,
-          minCommands: template?.min_commands,
-          scenarioTitle: scenario?.title,
-        }
-      });
+
+      const sessionResult = await finishSession(true, false, difficulty);
+
+      const passed = sessionResult?.result === 'pass';
+
+      if (passed) {
+
+        setTermHistory(h => [...h, { type: 'success', text: 'Target state achieved!' }]);
+
+        await handleScaffoldAction(sessionResult?.scaffold, sessionResult);
+
+      } else {
+
+        setTermHistory(h => [...h, {
+
+          type: 'output',
+
+          text: 'Target reached, but use fewer commands for a passing score.',
+
+        }]);
+
+        await handleScaffoldAction(
+
+          sessionResult?.scaffold ?? { action: 'reset_same', message: 'Try again with fewer commands.' },
+
+          sessionResult,
+
+        );
+
+        setDone(false);
+
+      }
+
     }
+
   }
 
-  const showExpected = difficulty === 'easy' || difficulty === 'medium';
-  const showFeedback = difficulty === 'easy';
-  const narrative = template ? (template.narrative) : 'Loading scenario…';
+  const showTarget = panels.target && template;
+
+  const showConsequence = panels.feedback;
+
+  const hardCap = template?.hard_cap ?? 0;
+
+  const centerColumns = showTarget ? '1fr 1fr' : '1fr';
+
+  const theme = getDifficultyTheme(difficulty);
+
+  const hintMode = scaffold?.hint_mode ?? false;
+
+  const variantLabel = scaffold?.template_index != null
+
+    ? `Variant ${scaffold.template_index}`
+
+    : null;
+
+  const attemptLabel = scaffold?.variant_attempt != null
+
+    ? `Attempt ${scaffold.variant_attempt} of 2`
+
+    : null;
 
   return (
+    <>
+      {showLoader && (
+        <ScenarioLoadingScreen
+          key={scenarioId}
+          title={lessonTitle}
+          onMinDurationComplete={handleMinDurationComplete}
+        />
+      )}
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <TopNav />
-      <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '280px 1fr 340px', overflow: 'hidden' }}>
-        {/* Left — Scenario Context */}
-        <div style={{ borderRight: `1px solid ${COLORS.border}`, padding: 18, overflowY: 'auto', background: COLORS.bg1 }}>
-          <div style={{ marginBottom: 12 }}>
-            <div style={{ fontSize: 11, color: COLORS.muted, marginBottom: 4 }}>
-              {scenario?.specific_objective}
-            </div>
-            <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>{scenario?.title}</div>
-          </div>
+      <WorkspaceHeader
+        module={scenario?.module}
+        scenario={scenario}
+        panels={panels}
+        onPanelChange={handlePanelChange}
+        difficulty={difficulty}
+        onDifficultyChange={handleDifficultyChange}
+        tierProgress={scaffold?.tier_progress}
+        commandCount={commandCount}
+        hardCap={hardCap}
+        onRetry={handleRetry}
+        onReset={handleReset}
+        onDashboard={() => navigate('/dashboard')}
+        busy={busy}
+      />
 
-          {/* Difficulty switcher */}
-          <div style={{ display: 'flex', gap: 4, marginBottom: 14 }}>
-            {['easy', 'medium', 'hard'].map(d => (
-              <button key={d} onClick={() => setDifficulty(d)} style={{
-                flex: 1, padding: '5px 0', borderRadius: 6, border: `1px solid ${difficulty === d ? COLORS.accent : COLORS.border}`,
-                background: difficulty === d ? COLORS.accentDim : 'transparent',
-                color: difficulty === d ? COLORS.accent : COLORS.secondary,
-                fontSize: 11, fontWeight: 600, cursor: 'pointer', textTransform: 'capitalize',
-              }}>{d}</button>
-            ))}
-          </div>
-
-          <div style={{ fontSize: 13, color: COLORS.textDim, lineHeight: 1.7, marginBottom: 16 }}>{narrative}</div>
-
-          {showFeedback && (
-            <div style={{ background: COLORS.bg2, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 12 }}>
-              <div style={{ fontSize: 11, fontWeight: 600, color: COLORS.accent, marginBottom: 6 }}>FEEDBACK</div>
-              <div style={{ fontSize: 12, color: COLORS.secondary }}>
-                {done ? '✓ Scenario complete!' : `Commands used: ${commandCount} / ${template?.hard_cap ?? '?'}`}
-              </div>
-            </div>
-          )}
-
-          <div style={{ marginTop: 16 }}>
-            <Btn variant="ghost" size="sm" onClick={() => navigate('/dashboard')}>← Dashboard</Btn>
-          </div>
+      <div style={{
+        flex: 1,
+        display: 'grid',
+        gridTemplateColumns: '280px 1fr',
+        gridTemplateRows: '1fr minmax(160px, 26vh)',
+        gridTemplateAreas: '"sidebar center" "sidebar terminal"',
+        overflow: 'hidden',
+        minHeight: 0,
+      }}>
+        <div style={{ gridArea: 'sidebar', minHeight: 0, overflow: 'hidden' }}>
+          <ScenarioSidebar
+            narrative={template?.narrative}
+            difficulty={difficulty}
+            onDifficultyChange={handleDifficultyChange}
+            tierProgress={scaffold?.tier_progress}
+            showConsequence={showConsequence}
+            consequence={consequence}
+            hintMode={hintMode}
+            banner={
+              <ScaffoldBanner
+                message={bannerMessage}
+                hintMode={hintMode}
+                variantLabel={variantLabel}
+                attemptLabel={attemptLabel}
+                theme={theme}
+              />
+            }
+          />
         </div>
 
-        {/* Center — DAG panels */}
-        <div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', borderRight: `1px solid ${COLORS.border}` }}>
-          <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-            <div style={{ padding: '8px 14px', borderBottom: `1px solid ${COLORS.border}`, display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-              <div style={{ width: 6, height: 6, borderRadius: '50%', background: COLORS.accent }} />
-              <span style={{ fontSize: 11, fontWeight: 600, color: COLORS.accent, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Live State</span>
+        <div style={{
+          gridArea: 'center',
+          display: 'grid',
+          gridTemplateColumns: centerColumns,
+          overflow: 'hidden',
+          borderLeft: `1px solid ${COLORS.border}`,
+          minHeight: 0,
+        }}>
+          {panels.live && (
+            <div style={{ borderRight: showTarget ? `1px solid ${COLORS.border}` : 'none', minWidth: 0 }}>
+              <LiveDagPanel repoState={repoState} theme={theme} />
             </div>
-            <div style={{ flex: 1, overflow: 'hidden' }}>
-              <DAGRenderer repoState={repoState} animated={true} />
+          )}
+          {showTarget && (
+            <div style={{ minWidth: 0 }}>
+              <TargetDagPanel targetState={template.target_state} />
             </div>
-          </div>
-
-          {showExpected && template && (
-            <div style={{ height: '40%', borderTop: `1px solid ${COLORS.border}`, overflow: 'hidden' }}>
-              <ExpectedStatePanel targetState={template.target_state} style={{ height: '100%', border: 'none', borderRadius: 0 }} />
+          )}
+          {!panels.live && !showTarget && (
+            <div style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: COLORS.muted, fontSize: 13, gridColumn: '1 / -1',
+            }}>
+              Enable Live DAG or Target State from the header.
             </div>
           )}
         </div>
 
-        {/* Right — Terminal */}
-        <div style={{ overflow: 'hidden' }}>
-          <Terminal history={termHistory} onCommand={handleCommand} disabled={done} />
+        <div style={{ gridArea: 'terminal', borderTop: `1px solid ${COLORS.border}`, minHeight: 0 }}>
+          <WorkspaceTerminal
+            history={termHistory}
+            onCommand={handleCommand}
+            disabled={done || busy}
+          />
         </div>
       </div>
     </div>
+    </>
   );
 }

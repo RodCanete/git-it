@@ -4,8 +4,11 @@ from rest_framework import generics, serializers as drf_serializers
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from curriculum.serializers import ScenarioTemplateSerializer
+
 from .models import UserProgress, ScenarioProgress, Session, CommandLog
 from .serializers import UserProgressSerializer, SessionSerializer, CommandLogSerializer
+from . import scaffold
 
 
 class ProgressView(APIView):
@@ -35,10 +38,12 @@ class SessionUpdateView(generics.UpdateAPIView):
         return Session.objects.filter(user=self.request.user)
 
     def perform_update(self, serializer):
+        difficulty_tier = serializer.validated_data.pop('difficulty_tier', None)
         session = serializer.save(ended_at=timezone.now())
 
         within_minimum = session.commands_used <= session.template.min_commands
-        result = Session.RESULT_PASS if (session.target_achieved and within_minimum) else Session.RESULT_MISS
+        passed = session.target_achieved and within_minimum
+        result = Session.RESULT_PASS if passed else Session.RESULT_MISS
         session.within_minimum = within_minimum
         session.result = result
         session.save(update_fields=['within_minimum', 'result'])
@@ -46,14 +51,25 @@ class SessionUpdateView(generics.UpdateAPIView):
         sp, _ = ScenarioProgress.objects.get_or_create(
             user=self.request.user, scenario=session.scenario
         )
-        sp.attempts += 1
-        if result == Session.RESULT_PASS:
-            sp.completed = True
-        sp.last_template_used = session.template.template_index
-        sp.save()
+        if sp.last_template_used is None:
+            sp.last_template_used = session.template.template_index
+
+        scaffold_result = scaffold.after_session(sp, session.scenario, difficulty_tier, passed)
+        serializer._scaffold = scaffold_result
 
         progress, _ = UserProgress.objects.get_or_create(user=self.request.user)
         progress.recompute()
+
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        data = serializer.data
+        if hasattr(serializer, '_scaffold'):
+            data['scaffold'] = serializer._scaffold
+        return Response(data)
 
 
 class CommandLogView(generics.CreateAPIView):

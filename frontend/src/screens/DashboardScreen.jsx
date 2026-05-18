@@ -16,7 +16,7 @@ function ScenarioRow({ scenario, moduleId, onStart }) {
     <div
       onMouseEnter={() => setHov(true)}
       onMouseLeave={() => setHov(false)}
-      onClick={() => onStart(scenario.id)}
+      onClick={() => onStart(scenario)}
       style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         padding: '10px 14px', borderRadius: 8, cursor: 'pointer',
@@ -77,8 +77,8 @@ export default function DashboardScreen() {
   const { data: modules = [], isLoading: modulesLoading } = useQuery({ queryKey: ['modules'], queryFn: fetchModules });
   const { data: progress } = useQuery({ queryKey: ['progress'], queryFn: fetchProgress });
 
-  function handleStartScenario(scenarioId) {
-    navigate(`/workspace/${scenarioId}`);
+  function handleStartScenario(scenario) {
+    navigate(`/workspace/${scenario.id}`, { state: { title: scenario.title } });
   }
 
   const totalScenarios = modules.reduce((sum, m) => sum + (m.scenarios?.length || 0), 0);
